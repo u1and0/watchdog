@@ -22,7 +22,6 @@ $ watchdog -e http://localhost:8080 -w $SLACK_WEBHOOK
 $ watchdog -e http://localhost:8080 -w $SLACK_WEBHOOK -m 2s -M 16s -u $SLACK_USER
 ```
 
-上記オプションでは、
-最小間隔2秒、最大間隔16秒ごとにendpointに指定したURLへアクセスを試みます。
+上記オプションでは、最小間隔2秒、最大間隔16秒ごとにendpointに指定したURLへアクセスを試みます。
 エラー発生時には、webhookに指定したチャンネルへ、userで指定したユーザー向けにリプライを飛ばします。
 エラー発生時は指数バックオフの考えを使って、リトライ間隔を最大間隔まで伸ばします。
