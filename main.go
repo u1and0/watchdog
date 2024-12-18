@@ -14,44 +14,34 @@ import (
 type HealthMonitor struct {
 	targetEndpoint  string
 	slackWebhookURL string
+	slackUserID     string
 	minInterval     time.Duration
 	maxInterval     time.Duration
 	logger          *log.Logger
 	client          *http.Client
 	errorCount      int
+	lastSuccessTime time.Time
 }
 
-func NewHealthMonitor(endpoint, webhookURL string, minInterval, maxInterval time.Duration) *HealthMonitor {
+func NewHealthMonitor(endpoint, webhookURL, userID string, minInterval, maxInterval time.Duration) *HealthMonitor {
 	return &HealthMonitor{
 		targetEndpoint:  endpoint,
 		slackWebhookURL: webhookURL,
+		slackUserID:     userID,
 		minInterval:     minInterval,
 		maxInterval:     maxInterval,
 		logger:          log.New(os.Stdout, "HealthMonitor: ", log.Ldate|log.Ltime|log.Lshortfile),
 		client:          &http.Client{Timeout: 10 * time.Second},
 		errorCount:      0,
+		lastSuccessTime: time.Now().Add(-maxInterval),
 	}
-}
-
-// calculateBackoffTime : 指数バックオフ（exponential backoff）アルゴリズムを使って
-// チェック間隔を計算する
-//
-// minInterval := 1 * time.Second
-// errorCount := 2
-// backoffTime := minInterval * time.Duration(1<<uint(errorCount))
-// backoffTime = 4秒
-func calculateBackoffTime(errorCount int, minInterval, maxInterval time.Duration) time.Duration {
-	backoffTime := minInterval * time.Duration(1<<uint(errorCount))
-	if backoffTime > maxInterval {
-		backoffTime = maxInterval
-	}
-	return backoffTime
 }
 
 func (h *HealthMonitor) sendSlackMessage(message string, isError bool) error {
 	color := "good"
 	if isError {
 		color = "danger"
+		message = fmt.Sprintf("<@%s> %s", h.slackUserID, message)
 	}
 
 	attachment := slack.Attachment{
@@ -74,18 +64,22 @@ func (h *HealthMonitor) checkHealth() {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		h.handleSuccess(fmt.Sprintf("✅ Health check successful for %s", h.targetEndpoint))
+		h.handleSuccess()
 	} else {
 		h.handleError(fmt.Sprintf("❌ Health check failed for %s. Status code: %d", h.targetEndpoint, resp.StatusCode))
 	}
 }
 
-func (h *HealthMonitor) handleSuccess(message string) {
-	h.logger.Println(message)
-	if err := h.sendSlackMessage(message, false); err != nil {
-		h.logger.Printf("Slack notification error: %v", err)
-	}
+func (h *HealthMonitor) handleSuccess() {
 	h.errorCount = 0
+	if time.Since(h.lastSuccessTime) >= h.maxInterval {
+		message := fmt.Sprintf("✅ Health check successful for %s", h.targetEndpoint)
+		h.logger.Println(message)
+		if err := h.sendSlackMessage(message, false); err != nil {
+			h.logger.Printf("Slack notification error: %v", err)
+		}
+		h.lastSuccessTime = time.Now()
+	}
 	time.Sleep(h.minInterval)
 }
 
@@ -106,30 +100,40 @@ func (h *HealthMonitor) StartMonitoring() {
 	}
 }
 
+func calculateBackoffTime(errorCount int, minInterval, maxInterval time.Duration) time.Duration {
+	backoffTime := minInterval * time.Duration(1<<uint(errorCount))
+	if backoffTime > maxInterval {
+		backoffTime = maxInterval
+	}
+	return backoffTime
+}
+
 func main() {
-	var endpoint, webhookURL string
+	var endpoint, webhookURL, userID string
 	var minInterval, maxInterval time.Duration
 
 	rootCmd := &cobra.Command{
 		Use:   "health-monitor",
 		Short: "Continuous health monitoring CLI tool",
 		Run: func(cmd *cobra.Command, args []string) {
-			if endpoint == "" || webhookURL == "" {
-				fmt.Println("Error: endpoint and webhook URL are required")
+			if endpoint == "" || webhookURL == "" || userID == "" {
+				fmt.Println("Error: endpoint, webhook URL, and user ID are required")
 				os.Exit(1)
 			}
 
-			monitor := NewHealthMonitor(endpoint, webhookURL, minInterval, maxInterval)
+			monitor := NewHealthMonitor(endpoint, webhookURL, userID, minInterval, maxInterval)
 			monitor.StartMonitoring()
 		},
 	}
 
 	rootCmd.Flags().StringVarP(&endpoint, "endpoint", "e", "", "Target endpoint to monitor")
 	rootCmd.Flags().StringVarP(&webhookURL, "webhook", "w", "", "Slack webhook URL")
+	rootCmd.Flags().StringVarP(&userID, "user", "u", "", "Slack user ID to mention in error messages")
 	rootCmd.Flags().DurationVarP(&minInterval, "min-interval", "m", 60*time.Second, "Minimum check interval")
 	rootCmd.Flags().DurationVarP(&maxInterval, "max-interval", "M", 3600*time.Second, "Maximum check interval")
 	rootCmd.MarkFlagRequired("endpoint")
 	rootCmd.MarkFlagRequired("webhook")
+	rootCmd.MarkFlagRequired("user")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
