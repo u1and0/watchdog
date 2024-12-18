@@ -1,3 +1,10 @@
+/*
+`watchdog` is a continuous health monitoring CLI tool
+
+usage:
+
+	$ watchdog -e http://localhost:8080 -m 2s -M 16s -w $SLACK_WEBHOOK -u $SLACK_USER
+*/
 package main
 
 import (
@@ -41,7 +48,9 @@ func (h *HealthMonitor) sendSlackMessage(message string, isError bool) error {
 	color := "good"
 	if isError {
 		color = "danger"
-		message = fmt.Sprintf("<@%s> %s", h.slackUserID, message)
+		if h.slackUserID != "" {
+			message = fmt.Sprintf("<@%s> %s", h.slackUserID, message)
+		}
 	}
 
 	attachment := slack.Attachment{
@@ -116,7 +125,7 @@ func main() {
 		Use:   "health-monitor",
 		Short: "Continuous health monitoring CLI tool",
 		Run: func(cmd *cobra.Command, args []string) {
-			if endpoint == "" || webhookURL == "" || userID == "" {
+			if endpoint == "" || webhookURL == "" {
 				fmt.Println("Error: endpoint, webhook URL, and user ID are required")
 				os.Exit(1)
 			}
@@ -133,7 +142,6 @@ func main() {
 	rootCmd.Flags().DurationVarP(&maxInterval, "max-interval", "M", 3600*time.Second, "Maximum check interval")
 	rootCmd.MarkFlagRequired("endpoint")
 	rootCmd.MarkFlagRequired("webhook")
-	rootCmd.MarkFlagRequired("user")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
