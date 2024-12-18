@@ -12,25 +12,36 @@ import (
 )
 
 type HealthMonitor struct {
-	targetEndpoint   string
-	slackWebhookURL  string
-	checkInterval    time.Duration
-	maxRetryInterval time.Duration
-	logger           *log.Logger
+	targetEndpoint  string
+	slackWebhookURL string
+	minInterval     time.Duration
+	maxInterval     time.Duration
+	logger          *log.Logger
+	client          *http.Client
+	errorCount      int
 }
 
-func NewHealthMonitor(endpoint, webhookURL string, interval time.Duration) *HealthMonitor {
+func NewHealthMonitor(endpoint, webhookURL string, minInterval, maxInterval time.Duration) *HealthMonitor {
 	return &HealthMonitor{
-		targetEndpoint:   endpoint,
-		slackWebhookURL:  webhookURL,
-		checkInterval:    interval,
-		maxRetryInterval: 1 * time.Hour,
-		logger:           log.New(os.Stdout, "HealthMonitor: ", log.Ldate|log.Ltime|log.Lshortfile),
+		targetEndpoint:  endpoint,
+		slackWebhookURL: webhookURL,
+		minInterval:     minInterval,
+		maxInterval:     maxInterval,
+		logger:          log.New(os.Stdout, "HealthMonitor: ", log.Ldate|log.Ltime|log.Lshortfile),
+		client:          &http.Client{Timeout: 10 * time.Second},
+		errorCount:      0,
 	}
 }
 
-func calculateBackoffTime(errorCount int, baseInterval, maxInterval time.Duration) time.Duration {
-	backoffTime := baseInterval * time.Duration(1<<errorCount)
+// calculateBackoffTime : 指数バックオフ（exponential backoff）アルゴリズムを使って
+// チェック間隔を計算する
+//
+// minInterval := 1 * time.Second
+// errorCount := 2
+// backoffTime := minInterval * time.Duration(1<<uint(errorCount))
+// backoffTime = 4秒
+func calculateBackoffTime(errorCount int, minInterval, maxInterval time.Duration) time.Duration {
+	backoffTime := minInterval * time.Duration(1<<uint(errorCount))
 	if backoffTime > maxInterval {
 		backoffTime = maxInterval
 	}
@@ -55,44 +66,37 @@ func (h *HealthMonitor) sendSlackMessage(message string, isError bool) error {
 }
 
 func (h *HealthMonitor) checkHealth() {
-	client := &http.Client{Timeout: 10 * time.Second}
-	errorCount := 0
-
-	resp, err := client.Get(h.targetEndpoint)
+	resp, err := h.client.Get(h.targetEndpoint)
 	if err != nil {
-		errorMsg := fmt.Sprintf("❌ Health check failed: %v", err)
-		h.logger.Println(errorMsg)
-		if errSlack := h.sendSlackMessage(errorMsg, true); errSlack != nil {
-			h.logger.Printf("Slack notification error: %v", errSlack)
-		}
-
-		// バックオフ時間の計算
-		backoffTime := calculateBackoffTime(errorCount, h.checkInterval, h.maxRetryInterval)
-		time.Sleep(backoffTime)
-		errorCount++
+		h.handleError(fmt.Sprintf("❌ Health check failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		successMsg := fmt.Sprintf("✅ Health check successful for %s", h.targetEndpoint)
-		h.logger.Println(successMsg)
-		if err := h.sendSlackMessage(successMsg, false); err != nil {
-			h.logger.Printf("Slack notification error: %v", err)
-		}
-		time.Sleep(h.checkInterval)
+		h.handleSuccess(fmt.Sprintf("✅ Health check successful for %s", h.targetEndpoint))
 	} else {
-		errorMsg := fmt.Sprintf("❌ Health check failed for %s. Status code: %d", h.targetEndpoint, resp.StatusCode)
-		h.logger.Println(errorMsg)
-		if err := h.sendSlackMessage(errorMsg, true); err != nil {
-			h.logger.Printf("Slack notification error: %v", err)
-		}
-
-		// バックオフ時間の計算
-		backoffTime := calculateBackoffTime(errorCount, h.checkInterval, h.maxRetryInterval)
-		time.Sleep(backoffTime)
-		errorCount++
+		h.handleError(fmt.Sprintf("❌ Health check failed for %s. Status code: %d", h.targetEndpoint, resp.StatusCode))
 	}
+}
+
+func (h *HealthMonitor) handleSuccess(message string) {
+	h.logger.Println(message)
+	if err := h.sendSlackMessage(message, false); err != nil {
+		h.logger.Printf("Slack notification error: %v", err)
+	}
+	h.errorCount = 0
+	time.Sleep(h.minInterval)
+}
+
+func (h *HealthMonitor) handleError(message string) {
+	h.logger.Println(message)
+	if err := h.sendSlackMessage(message, true); err != nil {
+		h.logger.Printf("Slack notification error: %v", err)
+	}
+	backoffTime := calculateBackoffTime(h.errorCount, h.minInterval, h.maxInterval)
+	time.Sleep(backoffTime)
+	h.errorCount++
 }
 
 func (h *HealthMonitor) StartMonitoring() {
@@ -104,7 +108,7 @@ func (h *HealthMonitor) StartMonitoring() {
 
 func main() {
 	var endpoint, webhookURL string
-	var checkInterval time.Duration
+	var minInterval, maxInterval time.Duration
 
 	rootCmd := &cobra.Command{
 		Use:   "health-monitor",
@@ -115,14 +119,15 @@ func main() {
 				os.Exit(1)
 			}
 
-			monitor := NewHealthMonitor(endpoint, webhookURL, checkInterval)
+			monitor := NewHealthMonitor(endpoint, webhookURL, minInterval, maxInterval)
 			monitor.StartMonitoring()
 		},
 	}
 
 	rootCmd.Flags().StringVarP(&endpoint, "endpoint", "e", "", "Target endpoint to monitor")
 	rootCmd.Flags().StringVarP(&webhookURL, "webhook", "w", "", "Slack webhook URL")
-	rootCmd.Flags().DurationVarP(&checkInterval, "interval", "i", 60*time.Second, "Check interval")
+	rootCmd.Flags().DurationVarP(&minInterval, "min-interval", "m", 60*time.Second, "Minimum check interval")
+	rootCmd.Flags().DurationVarP(&maxInterval, "max-interval", "M", 3600*time.Second, "Maximum check interval")
 	rootCmd.MarkFlagRequired("endpoint")
 	rootCmd.MarkFlagRequired("webhook")
 
