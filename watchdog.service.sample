@@ -1,0 +1,26 @@
+[Unit]
+Description=Watchdog Service for Server Monitoring
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/watchdog -e http://localhost:9000/test -u $SLACK_USER -w $SLACK_WEBHOOK -m 2s -M 600s
+Restart=always
+RestartSec=60
+
+# Logging configuration
+LogLevel=info
+SystemMaxUse=4M
+
+# Environment variable configuration
+EnvironmentFile=/home/myuser/.env
+User=myuser
+Group=myuser
+
+# Security settings
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
