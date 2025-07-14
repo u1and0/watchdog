@@ -79,21 +79,14 @@ func (h *HealthMonitor) checkHealth() {
 		h.handleFailure(fmt.Sprintf("❌ Health check failed: %v", err))
 		return
 	}
-	h.handleResult(resp.StatusCode, string(b))
-}
-
-// handleResult ステータスコード次第で
-// slackに正常メッセージを送るか、エラーメッセージを送るか。
-// エラーメッセージの場合は、再帰的に
-// 指数バックオフを使って時間差でリトライする処理へ移る。
-func (h *HealthMonitor) handleResult(code int, body string) {
-	// エラーケース
-	if code != http.StatusOK {
-		h.handleFailure(body)
+	// slackに正常メッセージを送るか、エラーメッセージを送るか。
+	// エラーメッセージの場合は、再帰的に
+	// 指数バックオフを使って時間差でリトライする処理へ移る。
+	if resp.StatusCode != http.StatusOK {
+		h.handleFailure(string(b))
 		return // minInterval の sleep は handleFailure 内で処理
 	}
-	// 成功ケースの処理
-	h.handleSuccess(body)
+	h.handleSuccess(string(b))
 	time.Sleep(h.minInterval)
 }
 
