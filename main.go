@@ -9,6 +9,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -68,36 +69,59 @@ func (h *HealthMonitor) sendSlackMessage(message string, isError bool) error {
 func (h *HealthMonitor) checkHealth() {
 	resp, err := h.client.Get(h.targetEndpoint)
 	if err != nil {
-		h.handleError(fmt.Sprintf("❌ Health check failed: %v", err))
+		h.handleFailure(fmt.Sprintf("❌ Health check failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
-		h.handleSuccess()
-	} else {
-		h.handleError(fmt.Sprintf("❌ Health check failed for %s. Status code: %d", h.targetEndpoint, resp.StatusCode))
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.handleFailure(fmt.Sprintf("❌ Health check failed: %v", err))
+		return
 	}
+	h.handleResult(resp.StatusCode, string(b))
 }
 
-func (h *HealthMonitor) handleSuccess() {
-	h.errorCount = 0
-	if time.Since(h.lastSuccessTime) >= h.maxInterval {
-		message := fmt.Sprintf("✅ Health check successful for %s", h.targetEndpoint)
-		h.logger.Println(message)
-		if err := h.sendSlackMessage(message, false); err != nil {
-			h.logger.Printf("Slack notification error: %v", err)
-		}
-		h.lastSuccessTime = time.Now()
+// handleResult ステータスコード次第で
+// slackに正常メッセージを送るか、エラーメッセージを送るか。
+// エラーメッセージの場合は、再帰的に
+// 指数バックオフを使って時間差でリトライする処理へ移る。
+func (h *HealthMonitor) handleResult(code int, body string) {
+	// エラーケース
+	if code != http.StatusOK {
+		h.handleFailure(body)
+		return // minInterval の sleep は handleFailure 内で処理
 	}
+	// 成功ケースの処理
+	h.handleSuccess(body)
 	time.Sleep(h.minInterval)
 }
 
-func (h *HealthMonitor) handleError(message string) {
+func (h *HealthMonitor) handleSuccess(body string) {
+	// 通知が多くなりすぎるため、maxInterval 未満だと何も通知しない
+	if time.Since(h.lastSuccessTime) < h.maxInterval {
+		return
+	}
+	// 成功したらHealthMonitorの状態をリセット
+	h.errorCount = 0
+	h.lastSuccessTime = time.Now()
+	// 成功メッセージをSlackに投げる
+	message := fmt.Sprintf("✅ Health check successful for %s: %s", h.targetEndpoint, body)
 	h.logger.Println(message)
+	if err := h.sendSlackMessage(message, false); err != nil {
+		h.logger.Printf("Slack notification error: %v", err)
+	}
+}
+
+func (h *HealthMonitor) handleFailure(body string) {
+	// エラーメッセージの作成とログ出力
+	message := fmt.Sprintf("❌ Health check failed for %s. %s", h.targetEndpoint, body)
+	h.logger.Println(message)
+	// Slack通知
 	if err := h.sendSlackMessage(message, true); err != nil {
 		h.logger.Printf("Slack notification error: %v", err)
 	}
+	// 指数バックオフを使って時間差でリトライ
 	backoffTime := calculateBackoffTime(h.errorCount, h.minInterval, h.maxInterval)
 	time.Sleep(backoffTime)
 	h.errorCount++
