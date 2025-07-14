@@ -19,6 +19,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const VERSION = "v0.1.0"
+
 type HealthMonitor struct {
 	targetEndpoint  string
 	slackWebhookURL string
@@ -141,8 +143,9 @@ func main() {
 	var ok bool
 
 	rootCmd := &cobra.Command{
-		Use:   "health-monitor",
-		Short: "Continuous health monitoring CLI tool",
+		Use:     "health-monitor",
+		Short:   "Continuous health monitoring CLI tool",
+		Version: VERSION,
 		Run: func(cmd *cobra.Command, args []string) {
 			if endpoint == "" {
 				fmt.Println("Error: endpoint is required")
